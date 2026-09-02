@@ -10,6 +10,11 @@ import os
 import cv2
 import numpy as np
 import pytest
+
+# Ensure the ocr submodule is registered before any patch("IndicPhotoOCR.ocr.*")
+# resolves its target (patch resolves at with-block entry, before the import
+# that happens inside _build_ocr()).
+import IndicPhotoOCR.ocr  # noqa: F401
 from unittest.mock import MagicMock, patch, call
 from PIL import Image
 
@@ -208,6 +213,47 @@ class TestOCRRecognise:
         all_args = list(args.args) + list(args.kwargs.values())
         assert synthetic_crop_image in all_args
         assert "english" in all_args
+
+    def test_recognise_passes_local_checkpoint_override(self, synthetic_crop_image, tmp_path):
+        """Per-call checkpoint override should reach the recogniser."""
+        fake_rec = _make_fake_recogniser("word")
+        ocr = _build_ocr(recogniser=fake_rec)
+        ckpt = str(tmp_path / "ft.ckpt")
+        ocr.recognise(synthetic_crop_image, "hindi", checkpoint=ckpt)
+        args = fake_rec.recognise.call_args
+        all_args = list(args.args) + list(args.kwargs.values())
+        assert ckpt in all_args
+
+    def test_global_recognition_checkpoint_string_passed_through(self, synthetic_crop_image, tmp_path):
+        """A global checkpoint string should reach the recogniser for any language."""
+        fake_rec = _make_fake_recogniser("word")
+        ckpt = str(tmp_path / "global.ckpt")
+        ocr = _build_ocr(recogniser=fake_rec, recognition_checkpoint=ckpt)
+        ocr.recognise(synthetic_crop_image, "hindi")
+        args = fake_rec.recognise.call_args
+        assert ckpt in list(args.args) + list(args.kwargs.values())
+
+    def test_per_language_checkpoint_dict(self, synthetic_crop_image, tmp_path):
+        """A dict should resolve the right checkpoint per language."""
+        fake_rec = _make_fake_recogniser("word")
+        marathi_ckpt = str(tmp_path / "marathi_ft.ckpt")
+        hindi_ckpt = str(tmp_path / "hindi_ft.ckpt")
+        ocr = _build_ocr(
+            recogniser=fake_rec,
+            recognition_checkpoint={"marathi": marathi_ckpt, "hindi": hindi_ckpt},
+        )
+        ocr.recognise(synthetic_crop_image, "marathi")
+        args = fake_rec.recognise.call_args
+        assert marathi_ckpt in list(args.args) + list(args.kwargs.values())
+
+    def test_no_recognition_checkpoint_passes_none(self, synthetic_crop_image):
+        """Without an override, the recogniser should receive None (download default)."""
+        fake_rec = _make_fake_recogniser("word")
+        ocr = _build_ocr(recogniser=fake_rec)
+        ocr.recognise(synthetic_crop_image, "hindi")
+        args = fake_rec.recognise.call_args
+        # first positional arg is the checkpoint; should be None
+        assert args.args[0] is None
 
 
 # ---------------------------------------------------------------------------

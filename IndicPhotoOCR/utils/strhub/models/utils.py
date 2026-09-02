@@ -89,6 +89,10 @@ def load_from_checkpoint(checkpoint_path: str, **kwargs):
         model = create_model(model_id, True, **kwargs)
     else:
         ModelClass = _get_model_class(checkpoint_path)
+        # torch 2.6+ defaults to weights_only=True which breaks Lightning
+        # checkpoints (they store arbitrary Python objects in hyper_parameters).
+        # These checkpoints come from the project's own release assets.
+        kwargs.setdefault('weights_only', False)
         model = ModelClass.load_from_checkpoint(checkpoint_path, **kwargs)
     return model
 

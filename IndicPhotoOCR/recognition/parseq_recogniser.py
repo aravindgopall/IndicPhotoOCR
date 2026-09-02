@@ -90,6 +90,44 @@ class PARseqrecogniser:
         model = load_from_checkpoint(checkpoint).eval().to(device)
         return model
 
+    def _resolve_model(self, checkpoint, language, verbose, device):
+        """Resolve, cache, and return a recognition model.
+
+        Loading strategy (first match wins):
+          1. ``checkpoint`` is a path to an existing ``.ckpt`` file -> load it
+             directly (use the local / fine-tuned checkpoint).
+          2. ``language == 'english'``                      -> torch.hub PARSeq.
+          3. otherwise                                         -> download the
+             default model for ``language`` via :meth:`ensure_model`.
+
+        The cache key is the checkpoint path when a local file is used (so a
+        custom checkpoint never collides with the default model for the same
+        language), otherwise the language name.
+        """
+        # 1. Explicit local checkpoint path takes priority.
+        if checkpoint and os.path.isfile(str(checkpoint)):
+            cache_key = str(checkpoint)
+            if cache_key not in self._model_cache:
+                if verbose:
+                    print(f"Loading local recognition checkpoint: {checkpoint}")
+                self._model_cache[cache_key] = self.load_model(device, str(checkpoint))
+            return self._model_cache[cache_key]
+
+        # 2. English uses the upstream torch.hub PARSeq model.
+        if language == "english":
+            if "english" not in self._model_cache:
+                self._model_cache["english"] = (
+                    torch.hub.load('baudm/parseq', 'parseq', pretrained=True, verbose=verbose)
+                    .eval().to(device)
+                )
+            return self._model_cache["english"]
+
+        # 3. Default: download (or use cached) the language-specific checkpoint.
+        if language not in self._model_cache:
+            model_path = self.ensure_model(language)
+            self._model_cache[language] = self.load_model(device, model_path)
+        return self._model_cache[language]
+
     def get_model_output(self, device, model, image_path, return_confidence=False):
         hp = model.hparams
         transform = self.get_transform(hp.img_size, rotation=0)
@@ -236,26 +274,18 @@ class PARseqrecogniser:
         Loads the desired model and returns the recognized word from the specified image.
 
         Args:
-            checkpoint (str): Path to the model checkpoint file.
-            language (str): Language code (e.g., 'hindi', 'english').
+            checkpoint (str): Path to a local .ckpt file, a language name, or None.
+                If a path to an existing file, that checkpoint is loaded directly
+                (use this to run a fine-tuned / charset-extended model).
+            language (str): Language code (e.g., 'hindi', 'english'). Used as the
+                fallback download key when ``checkpoint`` is not a file path.
             image_path (str): Path to the image for which text recognition is needed.
 
         Returns:
             str or tuple: The recognized text from the image as a string. If return_confidence is True, returns (text, confidence) tuple.
         """
-        # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        if language not in self._model_cache:
-            if language != "english":
-                model_path = self.ensure_model(checkpoint)
-                self._model_cache[language] = self.load_model(device, model_path)
-            else:
-                self._model_cache[language] = torch.hub.load('baudm/parseq', 'parseq', pretrained=True, verbose=verbose).eval().to(device)
-
-        model = self._model_cache[language]
-
+        model = self._resolve_model(checkpoint, language, verbose, device)
         result = self.get_model_output(device, model, image_path, return_confidence=return_confidence)
-        
         return result
 
     def recognise_batch(self, checkpoint: str, image_paths: list, language: str, verbose: bool, device: str, return_confidence: bool = False, batch_size: int = 32) -> list:
@@ -263,9 +293,10 @@ class PARseqrecogniser:
         Loads the desired model and returns recognized words for a batch of images.
 
         Args:
-            checkpoint (str): Path to the model checkpoint file.
+            checkpoint (str): Path to a local .ckpt file, a language name, or None.
+                If a path to an existing file, that checkpoint is loaded directly.
             image_paths (list): List of paths to the images.
-            language (str): Language code.
+            language (str): Language code (fallback download key).
             verbose (bool): Whether to print verbose output.
             device (str): Device to run inference on.
             return_confidence (bool): Whether to return (text, confidence) tuples.
@@ -274,17 +305,8 @@ class PARseqrecogniser:
         Returns:
             list: List of recognized texts or (text, confidence) tuples.
         """
-        if language not in self._model_cache:
-            if language != "english":
-                model_path = self.ensure_model(language)
-                self._model_cache[language] = self.load_model(device, model_path)
-            else:
-                self._model_cache[language] = torch.hub.load('baudm/parseq', 'parseq', pretrained=True).eval().to(device)
-
-        model = self._model_cache[language]
-
+        model = self._resolve_model(checkpoint, language, verbose, device)
         results = self.get_model_output_batch(device, model, image_paths, return_confidence=return_confidence, batch_size=batch_size)
-        
         return results
 # if __name__ == '__main__':
 #     fire.Fire(main)

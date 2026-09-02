@@ -29,8 +29,13 @@ class OCR:
             Valid options: ['hindi', 'bengali', 'tamil', 'telugu', 'malayalam', 'kannada',
                             'gujarati', 'marathi', 'punjabi', 'odia', 'assamese', 'urdu', 'meitei']
         verbose (bool): Whether to print detailed processing information.
+        recognition_checkpoint (str | dict | None): Override the recognition model(s)
+            with a local checkpoint path. Pass a string to use one checkpoint for every
+            language, or a ``{language: checkpoint_path}`` dict for per-language overrides
+            (e.g. ``{'marathi': '/path/to/marathi_ft.ckpt'}``). When None, the default
+            downloaded model for each detected language is used.
     """
-    def __init__(self, device='cuda:0', identifier_lang='hindi', verbose=False, detector='textbpn'):
+    def __init__(self, device='cuda:0', identifier_lang='hindi', verbose=False, detector='textbpn', recognition_checkpoint=None):
         # self.detect_model_checkpoint = detect_model_checkpoint
         # Original device string (e.g. 'cuda', 'cuda:0', or 'cpu')
         self.device = device
@@ -62,6 +67,8 @@ class OCR:
         else:
             raise ValueError("detector must be one of: 'east', 'textbpn', 'textbpnpp'")
         self.recogniser = PARseqrecogniser()
+        # Local checkpoint override(s) for recognition: str, dict, or None.
+        self.recognition_checkpoint = recognition_checkpoint
         # self.identifier = CLIPidentifier()
         self.identifier = VIT_identifier()
         self.indentifier_lang = identifier_lang
@@ -193,22 +200,39 @@ class OCR:
         script_lang = self.identifier.identify(cropped_path, "auto", self._pipeline_device)
         return script_lang, cropped_path
 
-    def recognise(self, cropped_image_path, script_lang, return_confidence=False):
+    def _resolve_recognition_checkpoint(self, script_lang, override=None):
+        """Return the checkpoint path to use for ``script_lang``, or None for defaults.
+
+        Priority: explicit ``override`` arg > per-language dict entry > global
+        string > None (download default).
+        """
+        if override is not None:
+            return override
+        rc = self.recognition_checkpoint
+        if isinstance(rc, dict):
+            return rc.get(script_lang)
+        if isinstance(rc, str):
+            return rc
+        return None
+
+    def recognise(self, cropped_image_path, script_lang, return_confidence=False, checkpoint=None):
         """
         Recognize text in a cropped image using the identified script model.
         
         Args:
             cropped_image_path (str): Path to the cropped image.
             script_lang (str): Identified script language.
+            return_confidence (bool): Whether to return (text, confidence).
+            checkpoint (str, optional): Path to a local .ckpt to use instead of
+                the default model for this language.
         
         Returns:
             str or tuple: Recognized text. If return_confidence is True, returns (text, confidence).
         """
-        """Recognize text in a cropped image area using the identified script."""
         if self.verbose:
             print("Recognizing text in detected area...")
-        result = self.recogniser.recognise(script_lang, cropped_image_path, script_lang, self.verbose, self._torch_device, return_confidence=return_confidence)
-        # print(recognized_text)
+        ckpt = self._resolve_recognition_checkpoint(script_lang, checkpoint)
+        result = self.recogniser.recognise(ckpt, cropped_image_path, script_lang, self.verbose, self._torch_device, return_confidence=return_confidence)
         return result
 
     def ocr(self, image_path, batch_size=0):
@@ -252,7 +276,8 @@ class OCR:
                     ids = [item[0] for item in items]
                     if self.verbose:
                         print(f"Recognizing {len(paths)} {lang} crops in batch...")
-                    results = self.recogniser.recognise_batch(lang, paths, lang, self.verbose, self._torch_device, return_confidence=True, batch_size=batch_size)
+                    batch_ckpt = self._resolve_recognition_checkpoint(lang)
+                    results = self.recogniser.recognise_batch(batch_ckpt, paths, lang, self.verbose, self._torch_device, return_confidence=True, batch_size=batch_size)
                     
                     for (id, (text, conf)) in zip(ids, results):
                         bbox = detections[id]

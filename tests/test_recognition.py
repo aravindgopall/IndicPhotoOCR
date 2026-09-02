@@ -225,6 +225,70 @@ class TestRecognise:
 
 
 # ---------------------------------------------------------------------------
+# recognise() -- local checkpoint path support
+# ---------------------------------------------------------------------------
+
+class TestRecogniseLocalCheckpoint:
+    """When a file path is passed as `checkpoint`, it must be loaded directly
+    (not downloaded via ensure_model)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        from IndicPhotoOCR.recognition.parseq_recogniser import PARseqrecogniser
+        self.rec = PARseqrecogniser()
+
+    def test_local_checkpoint_loads_directly(self, synthetic_crop_image, tmp_path):
+        """A real file path should go through load_model, NOT ensure_model."""
+        fake_ckpt = tmp_path / "marathi_ft.ckpt"
+        fake_ckpt.write_bytes(b"fake")  # must exist for os.path.isfile
+
+        with patch.object(self.rec, "ensure_model") as m_ensure, \
+             patch.object(self.rec, "load_model", return_value=MagicMock()) as m_load, \
+             patch.object(self.rec, "get_model_output", return_value=("मराठी", 0.9)):
+            result, conf = self.rec.recognise(
+                str(fake_ckpt), synthetic_crop_image, "marathi", False, "cpu",
+                return_confidence=True,
+            )
+            m_ensure.assert_not_called()
+            m_load.assert_called_once_with("cpu", str(fake_ckpt))
+            assert result == "मराठी"
+
+    def test_local_checkpoint_cached(self, synthetic_crop_image, tmp_path):
+        """Repeated calls with the same path must not reload the model."""
+        fake_ckpt = tmp_path / "model.ckpt"
+        fake_ckpt.write_bytes(b"fake")
+
+        with patch.object(self.rec, "load_model", return_value=MagicMock()) as m_load, \
+             patch.object(self.rec, "get_model_output", return_value="x"):
+            self.rec.recognise(str(fake_ckpt), synthetic_crop_image, "hindi", False, "cpu")
+            self.rec.recognise(str(fake_ckpt), synthetic_crop_image, "hindi", False, "cpu")
+            m_load.assert_called_once()
+
+    def test_nonexistent_checkpoint_falls_back_to_download(self, synthetic_crop_image):
+        """A non-file checkpoint string should fall through to ensure_model(language)."""
+        with patch.object(self.rec, "ensure_model", return_value="/fake/hindi.ckpt") as m_ensure, \
+             patch.object(self.rec, "load_model", return_value=MagicMock()), \
+             patch.object(self.rec, "get_model_output", return_value="word"):
+            self.rec.recognise("hindi", synthetic_crop_image, "hindi", False, "cpu")
+            m_ensure.assert_called_once_with("hindi")
+
+    def test_batch_uses_local_checkpoint(self, synthetic_crop_image, tmp_path):
+        fake_ckpt = tmp_path / "model.ckpt"
+        fake_ckpt.write_bytes(b"fake")
+
+        with patch.object(self.rec, "ensure_model") as m_ensure, \
+             patch.object(self.rec, "load_model", return_value=MagicMock()) as m_load, \
+             patch.object(self.rec, "get_model_output_batch", return_value=["a", "b"]):
+            results = self.rec.recognise_batch(
+                str(fake_ckpt), [synthetic_crop_image, synthetic_crop_image],
+                "marathi", False, "cpu",
+            )
+            m_ensure.assert_not_called()
+            m_load.assert_called_once_with("cpu", str(fake_ckpt))
+            assert results == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
 # Integration
 # ---------------------------------------------------------------------------
 

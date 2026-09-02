@@ -169,6 +169,15 @@ IndicPhotoOCR/script_identification/vit/models
 IndicPhotoOCR/detection/textbpn/models
 
 
+# Fine-tuning / charset-extension artifacts
+lightning_logs/
+*_extended_src.ckpt
+*_extended.ckpt
+
+# Generated training datasets
+data/
+
+
 build/
 dist/
 test.png

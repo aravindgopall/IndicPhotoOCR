@@ -158,6 +158,111 @@ print(f"Recognized: {text} | Certainty: {conf_score * 100:.2f}%")
 
 <hr style="width: 100%; border: 1px solid #000;">
 
+## 🔧 Extending the Charset & Fine-tuning
+
+The recognition models are trained on a fixed character set, so characters that
+were never seen during training (e.g. punctuation `()/.,*-`, digits, or rare
+matras/conjuncts) cannot be emitted and are silently stripped from predictions.
+IndicPhotoOCR now ships with utilities to **grow a checkpoint's vocabulary** and
+**fine-tune** it on new data — with no changes to the inference code.
+
+### 1. Inspect a checkpoint's charset
+```bash
+python extend_charset.py --checkpoint marathi.ckpt --inspect
+```
+
+### 2. Extend the charset
+Add specific characters, or auto-discover them from a JSONL dataset
+(`{"image_filename": ..., "expected_text": ...}`):
+```bash
+# explicit characters
+python extend_charset.py -c marathi.ckpt --extra-chars "()/.,*-:;\"" -o marathi_ext.ckpt
+
+# auto-discover from data (recommended)
+python extend_charset.py -c marathi.ckpt \
+  --data-jsonl "Marathi OCR/validation.jsonl" -o marathi_ext.ckpt
+
+# also grow max_label_length for long government text (default is 25)
+python extend_charset.py -c marathi.ckpt --data-jsonl ".../validation.jsonl" \
+  --max-label-length 100 -o marathi_ext.ckpt
+```
+How it works: existing token weights are preserved exactly; only fresh rows are
+added for new characters (and new positions for `max_label_length`). The output
+is a standard checkpoint that `load_from_checkpoint` reads transparently.
+
+### 3. Fine-tune on a JSONL image dataset
+```bash
+python finetune_recognition.py \
+  -c marathi_ext.ckpt \
+  --image-dir "Marathi OCR/images" \
+  --labels "Marathi OCR/validation.jsonl" \
+  -o marathi_finetuned.ckpt \
+  --extend-charset --max-label-length 100 \
+  --epochs 20 --lr 7e-4 --batch-size 8
+```
+`--extend-charset` grows the vocabulary to cover every character in the data
+before training (run it once via `extend_charset.py` if you prefer to keep that
+step separate). The fine-tuned checkpoint is a drop-in replacement — point
+`PARseqrecogniser.recognise` at it and inference works as before.
+
+> **Note:** PARSeq scales the learning rate by `batch_size/256`, so the
+> *effective* lr ≈ `lr * batch_size * accumulate_grad_batches / 256`. Increase
+> `--lr` or `--accumulate-grad-batches` if fine-tuning learns too slowly.
+
+Both utilities are also importable:
+```python
+from IndicPhotoOCR.recognition.charset_extension import extend_checkpoint_charset
+from IndicPhotoOCR.recognition.finetune import finetune
+
+extend_checkpoint_charset("marathi.ckpt", "()/.,*-", output_path="marathi_ext.ckpt")
+finetune("marathi_ext.ckpt", "Marathi OCR/images", "Marathi OCR/validation.jsonl",
+         "marathi_ft.ckpt", extend_charset=True, epochs=20)
+```
+
+### 4. Generate word-level training data from line images
+
+The Marathi OCR data ships **line-level** images (full sentences), but the
+recogniser expects **word crops** (TextBPN detects 1-2 words per box). The
+dataset generator splits line images into word crops using vertical-projection
+segmentation, matches each crop to its text token, and optionally augments:
+
+```bash
+# Split line images into word crops + 3x augmentation
+python -m IndicPhotoOCR.recognition.generate_dataset split \
+  --jsonl "Marathi OCR/validation.jsonl" \
+  --image-dir "Marathi OCR/images" \
+  --output-dir data/marathi_words --language marathi --augment 3
+
+# Append a second data source
+python -m IndicPhotoOCR.recognition.generate_dataset split \
+  --jsonl "Marathi OCR 2/validation.jsonl" \
+  --image-dir "Marathi OCR 2/images" \
+  --output-dir data/marathi_words --language marathi --augment 3 \
+  --append --prefix "v2_"
+```
+
+100 line images → ~700 unique word crops → ~2800 with 3× augmentation. That's
+enough for fine-tuning to teach the model 15 new characters. The BSTD scene
+images can also be cropped via the `crop` subcommand (uses polygon annotations).
+
+### 5. Use the fine-tuned checkpoint for inference
+
+```python
+from IndicPhotoOCR.ocr import OCR
+
+# Option A: pass the checkpoint per-language
+ocr = OCR(device="cpu", recognition_checkpoint={"marathi": "marathi_ft.ckpt"})
+
+# Option B: one checkpoint for all languages
+ocr = OCR(device="cpu", recognition_checkpoint="marathi_ft.ckpt")
+
+# Option C: per-call override
+ocr = OCR(device="cpu")
+text = ocr.recognise("cropped.jpg", "marathi", checkpoint="marathi_ft.ckpt")
+```
+
+<hr style="width: 100%; border: 1px solid #000;">
+
 ## 📚 Related Datasets & Citations
 - **Bharat Scene Text Dataset** - [BSTD](https://github.com/Bhashini-IITJ/BharatSceneTextDataset)
 
