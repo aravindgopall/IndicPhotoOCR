@@ -597,6 +597,7 @@ def split_lines_to_dataset(
     append: bool = False,
     prefix: str = "",
     seed: int = 42,
+    max_split_ratio: float = 3.0,
 ) -> Dict:
     """Split line-level images into word crops and build a JSONL dataset.
 
@@ -673,7 +674,7 @@ def split_lines_to_dataset(
                 # Skip if the ratio is too extreme (likely a multi-line image or
                 # bad expected_text).
                 ratio = max(len(crops), len(tokens)) / max(1, min(len(crops), len(tokens)))
-                if ratio > 3:
+                if ratio > max_split_ratio:
                     skipped_mismatch += 1
                     continue
                 pairs = _proportional_align(crops, tokens)
@@ -756,6 +757,9 @@ def main(argv: Optional[list] = None) -> int:
     p_split.add_argument("--max-label-length", type=int, default=25, help="Drop tokens longer than this")
     p_split.add_argument("--threshold", type=int, default=200, help="Binarization threshold (0-255)")
     p_split.add_argument("--min-gap-width", type=int, default=3, help="Min gap width to split words")
+    p_split.add_argument("--max-split-ratio", type=float, default=3.0,
+                         help="Max crop/token count ratio before a line is skipped "
+                              "(raise for code-heavy lines that fragment at slashes)")
     p_split.add_argument("--append", action="store_true", help="Append to existing dataset")
     p_split.add_argument("--prefix", default="", help="Filename prefix for crops (use with --append)")
     p_split.add_argument("--seed", type=int, default=42)
@@ -784,6 +788,7 @@ def main(argv: Optional[list] = None) -> int:
             augment=args.augment, max_label_length=args.max_label_length,
             threshold=args.threshold, min_gap_width=args.min_gap_width,
             append=args.append, prefix=args.prefix, seed=args.seed,
+            max_split_ratio=args.max_split_ratio,
         )
         print(f"Line splitting complete:")
         for k, v in result.items():
